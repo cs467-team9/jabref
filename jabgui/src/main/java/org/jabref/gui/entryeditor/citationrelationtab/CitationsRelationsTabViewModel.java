@@ -77,17 +77,29 @@ public class CitationsRelationsTabViewModel {
     }
 
     public void importEntries(List<CitationRelationItem> entriesToImport, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
+        List<BibEntry> importedEntries = addEntriesToLibrary(entriesToImport, searchType, existingEntry);
+        if (!importedEntries.isEmpty()) {
+            lastImportedEntry.set(importedEntries.getFirst());
+        }
+    }
+
+    /// For user to immediately review and edit imported entries.
+    public List<BibEntry> importEntriesForReview(List<CitationRelationItem> entriesToImport, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
+        return addEntriesToLibrary(entriesToImport, searchType, existingEntry);
+    }
+
+    private List<BibEntry> addEntriesToLibrary(List<CitationRelationItem> entriesToImport, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
         assert stateManager.getActiveDatabase().isPresent() : "No active database found, but it is required for importing citation relations";
         Optional<BibDatabaseContext> activeDatabase = stateManager.getActiveDatabase();
         if (activeDatabase.isEmpty()) {
             dialogService.notify(Localization.lang("No library open"));
-            return;
+            return List.of();
         }
         BibDatabaseContext databaseContext = activeDatabase.get();
 
         assert !entriesToImport.isEmpty() : "No entries to import";
         if (entriesToImport.isEmpty()) {
-            return;
+            return List.of();
         }
         List<BibEntry> entries = entriesToImport.stream()
                                                 .map(CitationRelationItem::entry)
@@ -109,7 +121,7 @@ public class CitationsRelationsTabViewModel {
             case CITED_BY ->
                     importCitedBy(entries, existingEntry, importHandler);
         }
-        lastImportedEntry.set(entries.getFirst());
+        return entries;
     }
 
     private void importCites(List<BibEntry> entries, BibEntry existingEntry, ImportHandler importHandler) {

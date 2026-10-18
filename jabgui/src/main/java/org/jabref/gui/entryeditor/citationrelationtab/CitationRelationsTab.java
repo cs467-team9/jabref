@@ -1017,6 +1017,17 @@ public class CitationRelationsTab extends EntryEditorTab {
         dialogService.notify(Localization.lang("%0 entry(s) imported", entriesToImport.size()));
     }
 
+    /// Adds the selected entries to the library like importEntries, but returns a list of entries for post-processing, so the user can edit the newly added entries one by one.
+    ///
+    /// @param entriesToImport entries to import
+    /// @return a List<BibEntry> containing all selected entries
+    private List<BibEntry> importEntriesForReview(List<CitationRelationItem> entriesToImport, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
+        citationsRelationsTabViewModel.cancelCitationSearches();
+        List<BibEntry> importedEntries = citationsRelationsTabViewModel.importEntriesForReview(entriesToImport, searchType, existingEntry);
+        dialogService.notify(Localization.lang("%0 entry(s) imported", entriesToImport.size()));
+        return importedEntries;
+    }
+
     /// Function to open possible duplicate entries window to compare duplicate entries
     ///
     /// @param citationRelationItem duplicate in the citation relations tab
