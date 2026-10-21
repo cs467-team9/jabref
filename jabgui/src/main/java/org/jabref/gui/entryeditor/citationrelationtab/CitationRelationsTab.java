@@ -7,6 +7,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1044,13 +1045,17 @@ public class CitationRelationsTab extends EntryEditorTab {
         }
         BibDatabaseContext databaseContext = activeDatabase.get();
 
-        List<CitationRelationItem> acceptedItems = new ArrayList<>();
-        for (int position = 0; position < itemsToReview.size(); position++) {
-            CitationRelationItem item = itemsToReview.get(position);
-            // The dialog edits a copy, so a declined entry stays in the citation list as it was fetched.
-            BibEntry editedEntry = new BibEntry(item.entry());
+        // The dialog edits copies, so a skipped entry stays in the citation list as it was fetched.
+        // One copy per entry keeps the edits when the user goes back to an entry.
+        List<BibEntry> editedEntries = itemsToReview.stream()
+                                                    .map(item -> new BibEntry(item.entry()))
+                                                    .toList();
+        BitSet chosenForAdding = new BitSet(itemsToReview.size());
+
+        int position = 0;
+        while (position < itemsToReview.size()) {
             CitationEntryReviewDialog reviewDialog = new CitationEntryReviewDialog(
-                    editedEntry,
+                    editedEntries.get(position),
                     position + 1,
                     itemsToReview.size(),
                     databaseContext,
@@ -1060,17 +1065,34 @@ public class CitationRelationsTab extends EntryEditorTab {
                     dialogService,
                     taskExecutor);
 
-            // Closing the window without choosing a button means the user wants out of the review.
+            // Closing the window without choosing a button discards the review like "End review without imports" does.
             CitationEntryReviewDialog.Decision decision = dialogService.showCustomDialogAndWait(reviewDialog)
-                                                                       .orElse(CitationEntryReviewDialog.Decision.STOP);
-            if (decision == CitationEntryReviewDialog.Decision.STOP) {
-                break;
-            }
-            if (decision == CitationEntryReviewDialog.Decision.ADD) {
-                acceptedItems.add(new CitationRelationItem(editedEntry, item.localEntry(), item.isLocal()));
+                                                                       .orElse(CitationEntryReviewDialog.Decision.CANCEL);
+            // Moving on from the last entry ends the loop, which imports the chosen entries
+            switch (decision) {
+                case PREVIOUS ->
+                        position = Math.max(0, position - 1);
+                case SKIP -> {
+                    chosenForAdding.clear(position);
+                    position++;
+                }
+                case NEXT -> {
+                    chosenForAdding.set(position);
+                    position++;
+                }
+                case CANCEL -> {
+                    dialogService.notify(Localization.lang("No entries added"));
+                    return;
+                }
             }
         }
 
+        List<CitationRelationItem> acceptedItems = chosenForAdding.stream()
+                                                                  .mapToObj(index -> new CitationRelationItem(
+                                                                          editedEntries.get(index),
+                                                                          itemsToReview.get(index).localEntry(),
+                                                                          itemsToReview.get(index).isLocal()))
+                                                                  .toList();
         if (acceptedItems.isEmpty()) {
             dialogService.notify(Localization.lang("No entries added"));
             return;

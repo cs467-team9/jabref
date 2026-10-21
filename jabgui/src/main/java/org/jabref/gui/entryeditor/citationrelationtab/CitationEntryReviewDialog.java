@@ -52,18 +52,20 @@ import org.jspecify.annotations.NullMarked;
 ///
 /// The fields use the same editors as the entry editor, so that, for example, the DOI editor offers
 /// to fetch the bibliographic data. The editors write to the entry directly; the caller hands in a copy
-/// so that [Decision#SKIP] and [Decision#STOP] leave the fetched entry as it was.
+/// so that the fetched entry stays as it was, and hands in the same copy again when the user returns to it.
 @NullMarked
 public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDialog.Decision> {
 
     /// The user's choice for the entry currently under review.
     public enum Decision {
-        /// Keep the edits and add this entry to the library.
-        ADD,
-        /// Leave this entry out and continue with the next one.
+        /// Go back to the previous entry, leaving the choice for this one as it was.
+        PREVIOUS,
+        /// Leave this entry out and continue with the next one. On the last entry, the chosen entries are added.
         SKIP,
-        /// End the review. Entries accepted before this one are still added.
-        STOP
+        /// Add this entry with its edits and continue with the next one. On the last entry, the chosen entries are added.
+        NEXT,
+        /// End the review without adding any entry.
+        CANCEL
     }
 
     private static final double LABEL_COLUMN_MIN_WIDTH = 110;
@@ -100,24 +102,33 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
         setTitle(Localization.lang("Review entry %0 of %1", position, total));
 
-        ButtonType addButtonType = new ButtonType(Localization.lang("Add to library"), ButtonBar.ButtonData.OK_DONE);
-        ButtonType skipButtonType = new ButtonType(Localization.lang("Skip entry"), ButtonBar.ButtonData.NEXT_FORWARD);
-        ButtonType stopButtonType = new ButtonType(Localization.lang("Stop review"), ButtonBar.ButtonData.CANCEL_CLOSE);
-        getDialogPane().getButtonTypes().setAll(addButtonType, skipButtonType, stopButtonType);
+        ButtonType previousButtonType = new ButtonType(Localization.lang("Previous entry"), ButtonBar.ButtonData.BACK_PREVIOUS);
+        ButtonType skipButtonType = new ButtonType(Localization.lang("Skip entry"), ButtonBar.ButtonData.OTHER);
+        // On the last entry there is no next one; moving on imports the chosen entries
+        ButtonType nextButtonType = position == total
+                                    ? new ButtonType(Localization.lang("Import entries"), ButtonBar.ButtonData.OK_DONE)
+                                    : new ButtonType(Localization.lang("Next entry"), ButtonBar.ButtonData.NEXT_FORWARD);
+        ButtonType cancelButtonType = new ButtonType(Localization.lang("End review without imports"), ButtonBar.ButtonData.CANCEL_CLOSE);
+        getDialogPane().getButtonTypes().setAll(previousButtonType, skipButtonType, nextButtonType, cancelButtonType);
+        getDialogPane().lookupButton(previousButtonType).setDisable(position == 1);
 
         setUpEntryTypeCombo(databaseContext, entryTypesManager);
         getDialogPane().setContent(createContent(databaseContext, preferences, stateManager, dialogService, taskExecutor));
         getDialogPane().setPrefSize(DIALOG_PREF_WIDTH, DIALOG_PREF_HEIGHT);
 
         setResultConverter(buttonType -> {
-            if (addButtonType.equals(buttonType)) {
-                entry.setType(entryTypeCombo.getValue());
-                return Decision.ADD;
+            // Kept whatever the decision is, so that the type is still chosen when the user comes back to this entry
+            entry.setType(entryTypeCombo.getValue());
+            if (previousButtonType.equals(buttonType)) {
+                return Decision.PREVIOUS;
             }
             if (skipButtonType.equals(buttonType)) {
                 return Decision.SKIP;
             }
-            return Decision.STOP;
+            if (nextButtonType.equals(buttonType)) {
+                return Decision.NEXT;
+            }
+            return Decision.CANCEL;
         });
     }
 
