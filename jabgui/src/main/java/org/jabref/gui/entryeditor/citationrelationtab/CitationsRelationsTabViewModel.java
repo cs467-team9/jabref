@@ -13,6 +13,7 @@ import javafx.beans.property.StringProperty;
 
 import org.jabref.gui.DialogService;
 import org.jabref.gui.StateManager;
+import org.jabref.gui.externalfiles.EntryImportHandlerTracker;
 import org.jabref.gui.externalfiles.ImportHandler;
 import org.jabref.gui.preferences.GuiPreferences;
 import org.jabref.logic.importer.fetcher.CrossRef;
@@ -100,6 +101,37 @@ public class CitationsRelationsTabViewModel {
         // Now, citation keys are set
         linkImportedEntries(entries, searchType, existingEntry);
         lastImportedEntry.set(entries.getFirst());
+    }
+
+    /// Imports the entries the user accepted in the review, asking how to resolve each possible duplicate.
+    ///
+    /// The duplicate check runs asynchronously and inserts copies of the given entries, so the citation
+    /// relation is set on the entries that actually reached the library, once every entry is imported or skipped.
+    public void importReviewedEntries(List<CitationRelationItem> entriesToImport, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
+        Optional<BibDatabaseContext> activeDatabase = stateManager.getActiveDatabase();
+        if (activeDatabase.isEmpty()) {
+            dialogService.notify(Localization.lang("No library open"));
+            return;
+        }
+        if (entriesToImport.isEmpty()) {
+            return;
+        }
+        BibDatabaseContext databaseContext = activeDatabase.get();
+        List<BibEntry> entries = entriesToImport.stream()
+                                                .map(CitationRelationItem::entry)
+                                                .toList();
+
+        EntryImportHandlerTracker tracker = new EntryImportHandlerTracker(stateManager, databaseContext, entries.size());
+        tracker.setOnFinish(() -> {
+            List<BibEntry> importedEntries = tracker.getImportedEntries();
+            dialogService.notify(Localization.lang("%0 entry(s) imported", importedEntries.size()));
+            if (importedEntries.isEmpty()) {
+                return;
+            }
+            linkImportedEntries(importedEntries, searchType, existingEntry);
+            lastImportedEntry.set(importedEntries.getFirst());
+        });
+        createImportHandler(databaseContext).importEntriesWithDuplicateCheck(null, entries, tracker);
     }
 
     private ImportHandler createImportHandler(BibDatabaseContext databaseContext) {

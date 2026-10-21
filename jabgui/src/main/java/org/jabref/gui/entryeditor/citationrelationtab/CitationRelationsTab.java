@@ -1027,7 +1027,7 @@ public class CitationRelationsTab extends EntryEditorTab {
         dialogService.notify(Localization.lang("%0 entry(s) imported", entriesToImport.size()));
     }
 
-    /// Function to review the checked entries one by one and import the accepted ones. 
+    /// Function to review the checked entries one by one and import the accepted ones.
     ///
     /// @param entriesToReview checked entries to walk through
     /// @param searchType      whether the entries cite the inspected entry or are cited by it
@@ -1068,7 +1068,8 @@ public class CitationRelationsTab extends EntryEditorTab {
             dialogService.notify(Localization.lang("No entries added"));
             return;
         }
-        importEntries(acceptedItems, searchType, existingEntry);
+        citationsRelationsTabViewModel.cancelCitationSearches();
+        citationsRelationsTabViewModel.importReviewedEntries(acceptedItems, searchType, existingEntry);
     }
 
     /// Function to open possible duplicate entries window to compare duplicate entries

@@ -8,6 +8,7 @@ import javafx.collections.FXCollections;
 import org.jabref.gui.DialogService;
 import org.jabref.gui.StateManager;
 import org.jabref.gui.frame.ExternalApplicationsPreferences;
+import org.jabref.gui.mergeentries.MergeDialogPreferences;
 import org.jabref.gui.preferences.GuiPreferences;
 import org.jabref.gui.undo.HeadlessGuiUndoManager;
 import org.jabref.logic.FilePreferences;
@@ -23,6 +24,7 @@ import org.jabref.logic.preferences.OwnerPreferences;
 import org.jabref.logic.preferences.TimestampPreferences;
 import org.jabref.logic.util.BackgroundTask;
 import org.jabref.logic.util.CurrentThreadTaskExecutor;
+import org.jabref.logic.util.OptionalObjectProperty;
 import org.jabref.model.database.BibDatabase;
 import org.jabref.model.database.BibDatabaseContext;
 import org.jabref.model.database.BibDatabaseMode;
@@ -93,10 +95,13 @@ class CitationsRelationsTabViewModelTest {
         bibDatabaseContext = new BibDatabaseContext(new BibDatabase());
         bibDatabaseContext.setMode(BibDatabaseMode.BIBTEX);
         when(stateManager.getActiveDatabase()).thenReturn(Optional.of(bibDatabaseContext));
+        // The duplicate-checked import selects the imported entries in the active tab; a deep-stubbed Optional would fail there.
+        when(stateManager.activeTabProperty()).thenReturn(OptionalObjectProperty.empty());
 
         LibraryPreferences libraryPreferences = mock(LibraryPreferences.class);
         when(libraryPreferences.shouldAddImportedEntries()).thenReturn(false);
         when(preferences.getLibraryPreferences()).thenReturn(libraryPreferences);
+        when(preferences.getMergeDialogPreferences()).thenReturn(mock(MergeDialogPreferences.class));
 
         viewModel = new CitationsRelationsTabViewModel(
                 preferences,
@@ -113,10 +118,12 @@ class CitationsRelationsTabViewModelTest {
 
         firstEntryToImport = new BibEntry(StandardEntryType.Article).withField(StandardField.AUTHOR, "First Author")
                                                                     .withField(StandardField.YEAR, "2022")
+                                                                    .withField(StandardField.TITLE, "Gut microbiota and cognition")
                                                                     .withCitationKey("FirstAuthorCitationKey2022");
 
         secondEntryToImport = new BibEntry(StandardEntryType.Article).withField(StandardField.AUTHOR, "Second Author")
                                                                      .withField(StandardField.YEAR, "2021")
+                                                                     .withField(StandardField.TITLE, "Dietary flavanols and memory")
                                                                      .withCitationKey("SecondAuthorCitationKey20221");
     }
 
@@ -182,6 +189,37 @@ class CitationsRelationsTabViewModelTest {
                 new CitationRelationItem(firstEntryToImport, false));
         viewModel.importEntries(citationItems, CitationFetcher.SearchType.CITED_BY, existingEntry);
         assertEquals(citationItems.getFirst().entry(), viewModel.lastImportedEntryProperty().get());
+    }
+
+    @Test
+    void reviewedEntriesImportedSoThatExistingEntryCitesThem() {
+        List<CitationRelationItem> citationItems = List.of(
+                new CitationRelationItem(firstEntryToImport, false),
+                new CitationRelationItem(secondEntryToImport, false));
+
+        viewModel.importReviewedEntries(citationItems, CitationFetcher.SearchType.CITES, existingEntry);
+
+        assertEquals(Optional.of("FirstAuthorCitationKey2022,SecondAuthorCitationKey20221"), existingEntry.getField(StandardField.CITES));
+        // The duplicate check imports copies, so the library content is compared by citation key.
+        assertEquals(List.of("Test2023", "FirstAuthorCitationKey2022", "SecondAuthorCitationKey20221"),
+                bibDatabaseContext.getEntries().stream().map(entry -> entry.getCitationKey().orElseThrow()).toList());
+    }
+
+    @Test
+    void reviewedEntriesImportedSoThatTheyCiteExistingEntry() {
+        List<CitationRelationItem> citationItems = List.of(
+                new CitationRelationItem(firstEntryToImport, false),
+                new CitationRelationItem(secondEntryToImport, false));
+
+        viewModel.importReviewedEntries(citationItems, CitationFetcher.SearchType.CITED_BY, existingEntry);
+
+        // The duplicate check imports copies, so the entries have to be looked up in the library.
+        BibEntry firstEntryInLibrary = bibDatabaseContext.getDatabase().getEntryByCitationKey(firstEntryToImport.getCitationKey().get()).get();
+        BibEntry secondEntryInLibrary = bibDatabaseContext.getDatabase().getEntryByCitationKey(secondEntryToImport.getCitationKey().get()).get();
+
+        assertEquals(Optional.of("Test2023"), firstEntryInLibrary.getField(StandardField.CITES));
+        assertEquals(Optional.of("Test2023"), secondEntryInLibrary.getField(StandardField.CITES));
+        assertEquals(firstEntryInLibrary, viewModel.lastImportedEntryProperty().get());
     }
 
     @Test
