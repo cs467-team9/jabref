@@ -95,7 +95,15 @@ public class CitationsRelationsTabViewModel {
                                                 .map(BibEntry::new)
                                                 .toList();
 
-        ImportHandler importHandler = new ImportHandler(
+        ImportHandler importHandler = createImportHandler(databaseContext);
+        importHandler.importEntries(entries);
+        // Now, citation keys are set
+        linkImportedEntries(entries, searchType, existingEntry);
+        lastImportedEntry.set(entries.getFirst());
+    }
+
+    private ImportHandler createImportHandler(BibDatabaseContext databaseContext) {
+        return new ImportHandler(
                 databaseContext,
                 preferences,
                 fileUpdateMonitor,
@@ -103,19 +111,19 @@ public class CitationsRelationsTabViewModel {
                 stateManager,
                 dialogService,
                 taskExecutor);
-        switch (searchType) {
-            case CITES ->
-                    importCites(entries, existingEntry, importHandler);
-            case CITED_BY ->
-                    importCitedBy(entries, existingEntry, importHandler);
-        }
-        lastImportedEntry.set(entries.getFirst());
     }
 
-    private void importCites(List<BibEntry> entries, BibEntry existingEntry, ImportHandler importHandler) {
-        importHandler.importEntries(entries);
-        // Now, citation keys are set
+    /// Records the citation relation between the inspected entry and the imported entries, which must already have their citation keys.
+    private void linkImportedEntries(List<BibEntry> importedEntries, CitationFetcher.SearchType searchType, BibEntry existingEntry) {
+        switch (searchType) {
+            case CITES ->
+                    linkCites(importedEntries, existingEntry);
+            case CITED_BY ->
+                    linkCitedBy(importedEntries, existingEntry);
+        }
+    }
 
+    private void linkCites(List<BibEntry> entries, BibEntry existingEntry) {
         SequencedSet<String> citeKeys = existingEntry.getCites();
         entries.stream()
                .flatMap(entry -> entry.getCitationKey().stream())
@@ -126,10 +134,7 @@ public class CitationsRelationsTabViewModel {
     /// "cited by" is the opposite of "cites", but not stored in field `CITED_BY`, but in the `CITES` field of the citing entry.
     ///
     /// Therefore, some special handling is needed
-    private void importCitedBy(List<BibEntry> entries, BibEntry existingEntry, ImportHandler importHandler) {
-        importHandler.importEntries(entries);
-        // now the citation keys are set
-
+    private void linkCitedBy(List<BibEntry> entries, BibEntry existingEntry) {
         if (existingEntry.getCitationKey().isEmpty()) {
             dialogService.notify(Localization.lang("No citation key for %0", existingEntry.getAuthorTitleYear()));
             return;
