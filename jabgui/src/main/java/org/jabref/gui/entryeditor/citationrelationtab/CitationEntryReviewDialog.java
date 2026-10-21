@@ -11,6 +11,7 @@ import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.SplitPane;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
@@ -25,6 +26,7 @@ import org.jabref.gui.fieldeditors.FieldEditorFX;
 import org.jabref.gui.fieldeditors.FieldEditors;
 import org.jabref.gui.fieldeditors.FieldNameLabel;
 import org.jabref.gui.preferences.GuiPreferences;
+import org.jabref.gui.preview.PreviewPanel;
 import org.jabref.gui.undo.JabRefGuiUndoManager;
 import org.jabref.gui.undo.RedoAction;
 import org.jabref.gui.undo.UndoAction;
@@ -33,6 +35,7 @@ import org.jabref.gui.util.FieldsUtil;
 import org.jabref.gui.util.ViewModelListCellFactory;
 import org.jabref.logic.journals.JournalAbbreviationRepository;
 import org.jabref.logic.l10n.Localization;
+import org.jabref.logic.util.TaskExecutor;
 import org.jabref.model.database.BibDatabaseContext;
 import org.jabref.model.entry.BibEntry;
 import org.jabref.model.entry.BibEntryType;
@@ -67,6 +70,9 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     private static final double EDITOR_COLUMN_MIN_WIDTH = 360;
     private static final double ROW_HEIGHT = 32;
     private static final double MULTILINE_ROW_HEIGHT = 96;
+    private static final double FIELDS_DIVIDER_POSITION = 0.55;
+    private static final double DIALOG_PREF_WIDTH = 1100;
+    private static final double DIALOG_PREF_HEIGHT = 650;
 
     private final BibEntry entry;
     private final ComboBox<EntryType> entryTypeCombo = new ComboBox<>();
@@ -88,7 +94,8 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
                                      BibEntryTypesManager entryTypesManager,
                                      GuiPreferences preferences,
                                      StateManager stateManager,
-                                     DialogService dialogService) {
+                                     DialogService dialogService,
+                                     TaskExecutor taskExecutor) {
         this.entry = entry;
 
         setTitle(Localization.lang("Review entry %0 of %1", position, total));
@@ -99,7 +106,8 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         getDialogPane().getButtonTypes().setAll(addButtonType, skipButtonType, stopButtonType);
 
         setUpEntryTypeCombo(databaseContext, entryTypesManager);
-        getDialogPane().setContent(createContent(databaseContext, preferences, stateManager, dialogService));
+        getDialogPane().setContent(createContent(databaseContext, preferences, stateManager, dialogService, taskExecutor));
+        getDialogPane().setPrefSize(DIALOG_PREF_WIDTH, DIALOG_PREF_HEIGHT);
 
         setResultConverter(buttonType -> {
             if (addButtonType.equals(buttonType)) {
@@ -133,7 +141,8 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     private VBox createContent(BibDatabaseContext databaseContext,
                                GuiPreferences preferences,
                                StateManager stateManager,
-                               DialogService dialogService) {
+                               DialogService dialogService,
+                               TaskExecutor taskExecutor) {
         Label summary = new Label(entry.getAuthorTitleYear());
         summary.setWrapText(true);
 
@@ -181,9 +190,17 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
         ScrollPane scrollPane = new ScrollPane(fieldGrid);
         scrollPane.setFitToWidth(true);
-        VBox.setVgrow(scrollPane, Priority.ALWAYS);
 
-        VBox content = new VBox(10, summary, scrollPane);
+        // The preview follows the edits, as next to the entry editor's fields
+        PreviewPanel previewPanel = new PreviewPanel(dialogService, preferences.getKeyBindingRepository(), preferences, taskExecutor, stateManager);
+        previewPanel.setDatabase(databaseContext);
+        previewPanel.setEntry(entry);
+
+        SplitPane fieldsAndPreview = new SplitPane(scrollPane, previewPanel);
+        fieldsAndPreview.setDividerPositions(FIELDS_DIVIDER_POSITION);
+        VBox.setVgrow(fieldsAndPreview, Priority.ALWAYS);
+
+        VBox content = new VBox(10, summary, fieldsAndPreview);
         content.setPadding(new Insets(10));
         return content;
     }

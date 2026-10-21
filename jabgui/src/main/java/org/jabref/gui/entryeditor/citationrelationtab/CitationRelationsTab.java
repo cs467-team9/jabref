@@ -1057,7 +1057,8 @@ public class CitationRelationsTab extends EntryEditorTab {
                     entryTypesManager,
                     preferences,
                     stateManager,
-                    dialogService);
+                    dialogService,
+                    taskExecutor);
 
             // Closing the window without choosing a button means the user wants out of the review.
             CitationEntryReviewDialog.Decision decision = dialogService.showCustomDialogAndWait(reviewDialog)
