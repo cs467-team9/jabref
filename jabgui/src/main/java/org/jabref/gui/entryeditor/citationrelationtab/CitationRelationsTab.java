@@ -1036,6 +1036,7 @@ public class CitationRelationsTab extends EntryEditorTab {
     private void reviewAndImportEntries(List<CitationRelationItem> entriesToReview,
                                         CitationFetcher.SearchType searchType,
                                         BibEntry existingEntry) {
+        // [impl->feat~entry-editor.citations.review-before-import~1]
         // The check model hands out a live list, which the import below changes while the review runs.
         List<CitationRelationItem> itemsToReview = List.copyOf(entriesToReview);
         Optional<BibDatabaseContext> activeDatabase = stateManager.getActiveDatabase();

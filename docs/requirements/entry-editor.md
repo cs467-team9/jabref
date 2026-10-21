@@ -39,6 +39,16 @@ See <https://github.com/JabRef/jabref/issues/17355>.
 
 Needs: impl
 
+## User can review citation entries one by one before adding them
+`feat~entry-editor.citations.review-before-import~1`
+
+Applies to the "Review and add selected entry(s) one by one" button in the "Citations" tab.
+Each selected entry is shown with the entry editor's field editors and a preview, so that its metadata can be corrected before it becomes part of the library.
+Only the entries chosen during the review are imported, once the review is finished.
+See <https://github.com/JabRef/jabref/issues/13598>.
+
+Needs: impl
+
 ## Main tab must display fields in single scrollable list
 `req~entry-editor.main-tab.single-list~1`
 
