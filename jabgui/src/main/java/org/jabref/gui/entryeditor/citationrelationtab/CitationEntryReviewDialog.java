@@ -1,18 +1,36 @@
 package org.jabref.gui.entryeditor.citationrelationtab;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.SequencedSet;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
+import javafx.application.Platform;
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
 import javafx.geometry.VPos;
+import javafx.scene.Node;
+import javafx.scene.control.Button;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
+import javafx.scene.control.Hyperlink;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.SplitPane;
+import javafx.scene.control.TitledPane;
 import javafx.scene.layout.ColumnConstraints;
+import javafx.scene.layout.FlowPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.RowConstraints;
@@ -22,6 +40,7 @@ import org.jabref.gui.DialogService;
 import org.jabref.gui.LibraryTab;
 import org.jabref.gui.StateManager;
 import org.jabref.gui.autocompleter.SuggestionProviders;
+import org.jabref.gui.entryeditor.FieldListSections;
 import org.jabref.gui.fieldeditors.FieldEditorFX;
 import org.jabref.gui.fieldeditors.FieldEditors;
 import org.jabref.gui.fieldeditors.FieldNameLabel;
@@ -36,15 +55,20 @@ import org.jabref.gui.util.ViewModelListCellFactory;
 import org.jabref.logic.journals.JournalAbbreviationRepository;
 import org.jabref.logic.l10n.Localization;
 import org.jabref.logic.util.TaskExecutor;
+import org.jabref.logic.util.strings.StringUtil;
 import org.jabref.model.database.BibDatabaseContext;
 import org.jabref.model.entry.BibEntry;
 import org.jabref.model.entry.BibEntryType;
 import org.jabref.model.entry.BibEntryTypesManager;
+import org.jabref.model.entry.event.FieldChangedEvent;
 import org.jabref.model.entry.field.Field;
 import org.jabref.model.entry.field.InternalField;
+import org.jabref.model.entry.field.StandardField;
+import org.jabref.model.entry.field.UserSpecificCommentField;
 import org.jabref.model.entry.types.EntryType;
 
 import com.airhacks.afterburner.injection.Injector;
+import com.google.common.eventbus.Subscribe;
 import org.jspecify.annotations.NullMarked;
 
 /// Shows one entry with its type and fields editable, so that the
@@ -75,12 +99,58 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     private static final double FIELDS_DIVIDER_POSITION = 0.55;
     private static final double DIALOG_PREF_WIDTH = 1100;
     private static final double DIALOG_PREF_HEIGHT = 650;
+    private static final double GRID_HGAP = 10;
+    private static final double GRID_VGAP = 6;
+    private static final double FIELD_AREA_SPACING = 8;
+
+    /// Chips offered besides the entry type's own optional fields. The abstract is no optional field of
+    /// any entry type, so it would otherwise have no chip at all.
+    private static final List<Field> COMMON_CHIP_FIELDS = List.of(StandardField.ABSTRACT);
+
+    /// Characters not allowed in the name of the user specific comment field.
+    private static final Pattern NON_ALPHANUMERIC = Pattern.compile("[^a-z0-9]");
 
     private final BibEntry entry;
+    private final BibDatabaseContext databaseContext;
+    private final BibEntryTypesManager entryTypesManager;
+    private final GuiPreferences preferences;
+    private final JournalAbbreviationRepository journalAbbreviationRepository;
+    private final SuggestionProviders suggestionProviders;
+    private final UndoAction undoAction;
+    private final RedoAction redoAction;
+
     private final ComboBox<EntryType> entryTypeCombo = new ComboBox<>();
 
     /// The entry is not part of the library yet, so its edits are kept out of the library's undo history.
     private final JabRefGuiUndoManager reviewUndoManager = new JabRefGuiUndoManager();
+
+    /// Editor of every shown field, in display order, as the entry editor's field tabs keep them. The
+    /// shown fields are its key set, so a later run of [#setupFieldArea] can tell whether the fields to
+    /// show changed at all.
+    private final Map<Field, FieldEditorFX> editors = new LinkedHashMap<>();
+
+    /// Holds the entry type row and one row per shown field. Kept across runs of [#setupFieldArea],
+    /// which replaces its contents.
+    private final GridPane fieldGrid = new GridPane();
+
+    /// Holds the field rows and the chips below them. Kept across runs of [#setupFieldArea].
+    private final VBox fieldArea = new VBox(FIELD_AREA_SPACING);
+
+    /// Fields without a value that are shown anyway: added with a chip, or cleared by the user while
+    /// being shown. Neither is part of [BibEntry#getFields()], so without this set the next run of
+    /// [#setupFieldArea] would drop their rows again.
+    private final Set<Field> fieldsShownWithoutValue = new LinkedHashSet<>();
+
+    /// Whether the chips of the entry type's secondary optional fields are shown as well.
+    private boolean showSecondaryOptionalChips;
+
+    /// The current user's personal comment field, offered as a chip of the comments section.
+    private final UserSpecificCommentField userSpecificCommentField;
+
+    /// Expand state of each section, so that the rebuild after a chip click does not collapse a section
+    /// the user opened.
+    private final Map<FieldListSections.SectionType, Boolean> sectionExpandOverrides =
+            new EnumMap<>(FieldListSections.SectionType.class);
 
     /// Function to build the review dialog for one fetched entry
     ///
@@ -89,6 +159,10 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     /// @param total             number of entries to review
     /// @param databaseContext   library the entry is reviewed for
     /// @param entryTypesManager source of the selectable entry types
+    /// @param preferences       preferences the field editors are built from
+    /// @param stateManager      source of the library's autocompletion suggestions
+    /// @param dialogService     service the preview panel and the undo actions report through
+    /// @param taskExecutor      executor the preview panel renders on
     public CitationEntryReviewDialog(BibEntry entry,
                                      int position,
                                      int total,
@@ -99,6 +173,18 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
                                      DialogService dialogService,
                                      TaskExecutor taskExecutor) {
         this.entry = entry;
+        this.databaseContext = databaseContext;
+        this.entryTypesManager = entryTypesManager;
+        this.preferences = preferences;
+        this.journalAbbreviationRepository = Injector.instantiateModelOrService(JournalAbbreviationRepository.class);
+        this.suggestionProviders = stateManager.activeTabProperty().get()
+                                               .map(LibraryTab::getSuggestionProviders)
+                                               .orElse(new SuggestionProviders());
+        this.undoAction = createUndoAction(dialogService, stateManager);
+        this.redoAction = createRedoAction(dialogService, stateManager);
+        String defaultOwner = NON_ALPHANUMERIC.matcher(
+                preferences.getOwnerPreferences().getDefaultOwner().toLowerCase(Locale.ROOT)).replaceAll("-");
+        this.userSpecificCommentField = new UserSpecificCommentField(defaultOwner);
 
         setTitle(Localization.lang("Review entry %0 of %1", position, total));
 
@@ -112,9 +198,15 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         getDialogPane().getButtonTypes().setAll(previousButtonType, skipButtonType, nextButtonType, cancelButtonType);
         getDialogPane().lookupButton(previousButtonType).setDisable(position == 1);
 
-        setUpEntryTypeCombo(databaseContext, entryTypesManager);
-        getDialogPane().setContent(createContent(databaseContext, preferences, stateManager, dialogService, taskExecutor));
+        setUpEntryTypeCombo();
+        getDialogPane().setContent(createContent(stateManager, dialogService, taskExecutor));
         getDialogPane().setPrefSize(DIALOG_PREF_WIDTH, DIALOG_PREF_HEIGHT);
+
+        // Registered after the first build, so that neither reacts while the dialog is still being set up
+        entryTypeCombo.valueProperty().addListener((_, _, selectedType) ->
+                Optional.ofNullable(selectedType).ifPresent(this::applyEntryType));
+        entry.registerListener(this);
+        setOnHidden(_ -> entry.unregisterListener(this));
 
         setResultConverter(buttonType -> {
             // Kept whatever the decision is, so that the type is still chosen when the user comes back to this entry
@@ -133,10 +225,7 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to fill the entry type combo box with the types of the library's mode
-    ///
-    /// @param databaseContext   library deciding which entry types are offered
-    /// @param entryTypesManager source of the selectable entry types
-    private void setUpEntryTypeCombo(BibDatabaseContext databaseContext, BibEntryTypesManager entryTypesManager) {
+    private void setUpEntryTypeCombo() {
         entryTypeCombo.getItems().setAll(entryTypesManager.getAllTypes(databaseContext.getMode()).stream()
                                                           .map(BibEntryType::getType)
                                                           .sorted(Comparator.comparing(EntryType::getDisplayName))
@@ -148,58 +237,19 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         entryTypeCombo.setMaxWidth(Double.MAX_VALUE);
     }
 
-    /// Function to build the dialog body: the entry summary above the editable type and field rows
-    private VBox createContent(BibDatabaseContext databaseContext,
-                               GuiPreferences preferences,
-                               StateManager stateManager,
-                               DialogService dialogService,
-                               TaskExecutor taskExecutor) {
+    /// Function to build the dialog body: the entry summary above the field rows and the preview
+    ///
+    /// @param stateManager  source of the library state the preview panel reads
+    /// @param dialogService service the preview panel reports through
+    /// @param taskExecutor  executor the preview panel renders on
+    private VBox createContent(StateManager stateManager, DialogService dialogService, TaskExecutor taskExecutor) {
         Label summary = new Label(entry.getAuthorTitleYear());
         summary.setWrapText(true);
 
-        GridPane fieldGrid = new GridPane();
-        fieldGrid.setHgap(10);
-        fieldGrid.setVgap(6);
+        fieldArea.getStyleClass().addAll("all-fields-container", "padding-12");
+        setupFieldArea();
 
-        ColumnConstraints labelColumn = new ColumnConstraints();
-        labelColumn.setMinWidth(LABEL_COLUMN_MIN_WIDTH);
-        labelColumn.setHalignment(HPos.RIGHT);
-        ColumnConstraints editorColumn = new ColumnConstraints();
-        editorColumn.setMinWidth(EDITOR_COLUMN_MIN_WIDTH);
-        editorColumn.setHgrow(Priority.ALWAYS);
-        fieldGrid.getColumnConstraints().setAll(labelColumn, editorColumn);
-
-        fieldGrid.add(new Label(Localization.lang("Entry type")), 0, 0);
-        fieldGrid.add(entryTypeCombo, 1, 0);
-        fieldGrid.getRowConstraints().add(new RowConstraints());
-
-        JournalAbbreviationRepository journalAbbreviationRepository = Injector.instantiateModelOrService(JournalAbbreviationRepository.class);
-        SuggestionProviders suggestionProviders = stateManager.activeTabProperty().get()
-                                                              .map(LibraryTab::getSuggestionProviders)
-                                                              .orElse(new SuggestionProviders());
-        UndoAction undoAction = createUndoAction(dialogService, stateManager);
-        RedoAction redoAction = createRedoAction(dialogService, stateManager);
-
-        int row = 1;
-        for (Field field : editableFields()) {
-            FieldEditorFX fieldEditor = FieldEditors.getForField(
-                    field,
-                    journalAbbreviationRepository,
-                    preferences,
-                    databaseContext,
-                    entry.getType(),
-                    suggestionProviders,
-                    reviewUndoManager,
-                    undoAction,
-                    redoAction);
-            fieldEditor.bindToEntry(entry);
-            fieldGrid.add(new FieldNameLabel(field), 0, row);
-            fieldGrid.add(fieldEditor.getNode(), 1, row);
-            fieldGrid.getRowConstraints().add(createFieldRowConstraints(field, fieldEditor));
-            row++;
-        }
-
-        ScrollPane scrollPane = new ScrollPane(fieldGrid);
+        ScrollPane scrollPane = new ScrollPane(fieldArea);
         scrollPane.setFitToWidth(true);
 
         // The preview follows the edits, as next to the entry editor's fields
@@ -213,7 +263,315 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
         VBox content = new VBox(10, summary, fieldsAndPreview);
         content.setPadding(new Insets(10));
+        // The styling of the field rows, the sections and the chips is scoped to the entry editor, and
+        // this dialog shows exactly that content
+        content.getStyleClass().add("entry-editor");
         return content;
+    }
+
+    /// The label and the editor of one field, kept together while the rows are distributed over the
+    /// sections they belong to.
+    ///
+    /// @param field  field of the row
+    /// @param label  label shown in front of the editor
+    /// @param editor editor of the field
+    private record FieldRow(Field field, Label label, FieldEditorFX editor) {
+    }
+
+    /// Function to build the rows of the fields to show, replacing the rows of the previous run
+    ///
+    /// Takes the three steps the entry editor's field tabs take: determine the fields, create a label and
+    /// an editor for each of them, then arrange those. Running it again is what lets the rows follow a
+    /// change of the entry type or of the fields the entry has.
+    ///
+    /// The arrangement follows the entry editor's "Main" tab: the fields of the main group as a grid on
+    /// top, then the chips of that group, then one collapsible section per further group, each holding
+    /// its own rows and chips. A section is present even without a single row, collapsed, so that its
+    /// chips stay reachable.
+    private void setupFieldArea() {
+        editors.clear();
+        fieldGrid.getChildren().clear();
+        fieldGrid.getColumnConstraints().clear();
+        fieldGrid.getRowConstraints().clear();
+
+        Map<FieldListSections.SectionType, List<FieldRow>> rowsPerSection =
+                new EnumMap<>(FieldListSections.SectionType.class);
+        for (Field field : determineFieldsToShow()) {
+            rowsPerSection.computeIfAbsent(FieldListSections.sectionOf(field), _ -> new ArrayList<>())
+                          .add(createFieldRow(field));
+        }
+
+        layoutMainFields(rowsPerSection.getOrDefault(FieldListSections.SectionType.MAIN, List.of()));
+        fieldArea.getChildren().setAll(fieldGrid, createMainChipBar());
+        for (FieldListSections.SectionType type : FieldListSections.SectionType.values()) {
+            if (type != FieldListSections.SectionType.MAIN) {
+                fieldArea.getChildren().add(
+                        createSectionPane(type, rowsPerSection.getOrDefault(type, List.of())));
+            }
+        }
+    }
+
+    /// Function to determine the fields to show, and in which order, as the entry editor's "Main" tab does
+    ///
+    /// The entry type's required fields come first, the unset ones included, so that a value the fetcher
+    /// did not deliver shows as an empty editor instead of being missing from the dialog. The set
+    /// optional fields follow in the entry type's own order, then every remaining set field by name.
+    /// Internal bookkeeping fields are left out, among them the citation key, which is assigned when the
+    /// entry enters the library.
+    private SequencedSet<Field> determineFieldsToShow() {
+        Set<Field> setFields = entry.getFields();
+        SequencedSet<Field> fields = new LinkedHashSet<>();
+        entryTypesManager.enrich(entry.getType(), databaseContext.getMode()).ifPresent(entryType -> {
+            entryType.getRequiredFields().forEach(orFields -> fields.addAll(orFields.getFields()));
+            entryType.getImportantOptionalFields().stream()
+                     .filter(setFields::contains)
+                     .forEach(fields::add);
+            entryType.getDetailOptionalNotDeprecatedFields(databaseContext.getMode()).stream()
+                     .filter(setFields::contains)
+                     .forEach(fields::add);
+        });
+        setFields.stream()
+                 .sorted(Comparator.comparing(Field::getName))
+                 .forEach(fields::add);
+        fields.addAll(fieldsShownWithoutValue);
+        fields.removeIf(field -> field instanceof InternalField);
+        return fields;
+    }
+
+    /// Function to create the label and the editor of one field, and to remember the editor
+    ///
+    /// The editor is the one the entry editor uses for the field, so that it offers the same actions —
+    /// looking up the bibliographic data of a DOI, for example.
+    ///
+    /// @param field field the label and the editor belong to
+    private FieldRow createFieldRow(Field field) {
+        FieldEditorFX fieldEditor = FieldEditors.getForField(
+                field,
+                journalAbbreviationRepository,
+                preferences,
+                databaseContext,
+                entry.getType(),
+                suggestionProviders,
+                reviewUndoManager,
+                undoAction,
+                redoAction);
+        fieldEditor.bindToEntry(entry);
+        editors.put(field, fieldEditor);
+        return new FieldRow(field, new FieldNameLabel(field), fieldEditor);
+    }
+
+    /// Function to arrange the entry type row and the rows of the main group in the kept grid
+    ///
+    /// @param rows rows of the main group, in display order
+    private void layoutMainFields(List<FieldRow> rows) {
+        configureFieldGrid(fieldGrid);
+        fieldGrid.add(new Label(Localization.lang("Entry type")), 0, 0);
+        fieldGrid.add(entryTypeCombo, 1, 0);
+        fieldGrid.getRowConstraints().add(new RowConstraints());
+        addFieldRows(fieldGrid, rows, 1);
+    }
+
+    /// Function to create the collapsible pane of one field group
+    ///
+    /// Holds the rows of the group and, below them, the chips for its fields without a row, as the entry
+    /// editor's "Main" tab builds a section. Collapsed by default while the group has no row.
+    ///
+    /// @param type section the fields belong to
+    /// @param rows rows of the section, in display order
+    private TitledPane createSectionPane(FieldListSections.SectionType type, List<FieldRow> rows) {
+        VBox sectionContent = new VBox(FIELD_AREA_SPACING);
+        if (!rows.isEmpty()) {
+            GridPane sectionGrid = new GridPane();
+            configureFieldGrid(sectionGrid);
+            addFieldRows(sectionGrid, rows, 0);
+            sectionContent.getChildren().add(sectionGrid);
+        }
+        List<Field> chipFields = fieldsWithoutRow(sectionMemberFields(type)).toList();
+        if (!chipFields.isEmpty()) {
+            sectionContent.getChildren().add(createChips(chipFields));
+        }
+
+        TitledPane sectionPane = new TitledPane(type.header().orElseThrow(), sectionContent);
+        sectionPane.getStyleClass().add("all-fields-section-pane");
+        sectionPane.setAnimated(false);
+        sectionPane.setExpanded(sectionExpandOverrides.getOrDefault(type, !rows.isEmpty()));
+        sectionPane.expandedProperty().addListener((_, _, expanded) -> sectionExpandOverrides.put(type, expanded));
+        return sectionPane;
+    }
+
+    /// Function to collect the fields a section offers chips for
+    ///
+    /// The comments section offers the general comment and, when the preferences ask for them, the
+    /// current user's personal comment field.
+    ///
+    /// @param type section to offer chips for
+    private SequencedSet<Field> sectionMemberFields(FieldListSections.SectionType type) {
+        if (type == FieldListSections.SectionType.COMMENTS) {
+            SequencedSet<Field> commentFields = new LinkedHashSet<>();
+            commentFields.add(StandardField.COMMENT);
+            if (preferences.getEntryEditorPreferences().shouldShowUserCommentsFields()) {
+                commentFields.add(userSpecificCommentField);
+            }
+            return commentFields;
+        }
+        return FieldListSections.fieldsOf(type);
+    }
+
+    /// Function to give a grid the label column and the editor column
+    ///
+    /// @param grid grid the columns are set on
+    private static void configureFieldGrid(GridPane grid) {
+        grid.setHgap(GRID_HGAP);
+        grid.setVgap(GRID_VGAP);
+
+        ColumnConstraints labelColumn = new ColumnConstraints();
+        labelColumn.setMinWidth(LABEL_COLUMN_MIN_WIDTH);
+        labelColumn.setHalignment(HPos.RIGHT);
+        ColumnConstraints editorColumn = new ColumnConstraints();
+        editorColumn.setMinWidth(EDITOR_COLUMN_MIN_WIDTH);
+        editorColumn.setHgrow(Priority.ALWAYS);
+        grid.getColumnConstraints().setAll(labelColumn, editorColumn);
+    }
+
+    /// Function to add one row per field to a grid
+    ///
+    /// @param grid     grid the rows are added to
+    /// @param rows     rows to add, in display order
+    /// @param firstRow index of the first free row of the grid
+    private static void addFieldRows(GridPane grid, List<FieldRow> rows, int firstRow) {
+        int row = firstRow;
+        for (FieldRow fieldRow : rows) {
+            grid.add(fieldRow.label(), 0, row);
+            grid.add(fieldRow.editor().getNode(), 1, row);
+            grid.getRowConstraints().add(createFieldRowConstraints(fieldRow.field(), fieldRow.editor()));
+            row++;
+        }
+    }
+
+    /// Function to apply the entry type the user chose
+    ///
+    /// Which fields are required follows from the entry type, so the rows are built again.
+    ///
+    /// @param selectedType entry type chosen in the combo box
+    private void applyEntryType(EntryType selectedType) {
+        entry.setType(selectedType);
+        setupFieldArea();
+    }
+
+    /// Function to create the buttons which add a field of the main group
+    ///
+    /// Offered are the entry type's optional fields of that group which have no row yet: the important
+    /// ones right away, the remaining ones behind "Show more", as the entry editor's "Main" tab offers
+    /// them. The fields of the other groups get their chips inside their own section. Without these
+    /// buttons a field the fetcher did not deliver could not be filled in at all, because a field
+    /// without a value has no row.
+    private Node createMainChipBar() {
+        FlowPane chips = new FlowPane();
+        chips.getStyleClass().add("gap-4");
+
+        entryTypesManager.enrich(entry.getType(), databaseContext.getMode()).ifPresent(entryType -> {
+            mainGroupChipFields(entryType.getImportantOptionalFields())
+                    .forEach(field -> chips.getChildren().add(createAddChip(field)));
+            fieldsWithoutRow(COMMON_CHIP_FIELDS)
+                    .forEach(field -> chips.getChildren().add(createAddChip(field)));
+
+            List<Field> secondaryFields = mainGroupChipFields(
+                    entryType.getDetailOptionalNotDeprecatedFields(databaseContext.getMode())).toList();
+            if (secondaryFields.isEmpty()) {
+                return;
+            }
+            if (showSecondaryOptionalChips) {
+                secondaryFields.forEach(field -> chips.getChildren().add(createAddChip(field)));
+            }
+            Hyperlink toggle = new Hyperlink(showSecondaryOptionalChips
+                                             ? Localization.lang("Show less")
+                                             : Localization.lang("Show more"));
+            toggle.setOnAction(_ -> {
+                showSecondaryOptionalChips = !showSecondaryOptionalChips;
+                setupFieldArea();
+            });
+            chips.getChildren().add(toggle);
+        });
+
+        return chips;
+    }
+
+    /// Function to lay the chips of one group out side by side
+    ///
+    /// @param chipFields fields to offer a chip for, in display order
+    private FlowPane createChips(List<Field> chipFields) {
+        FlowPane chips = new FlowPane();
+        chips.getStyleClass().add("gap-4");
+        chipFields.forEach(field -> chips.getChildren().add(createAddChip(field)));
+        return chips;
+    }
+
+    /// Function to pick the chip candidates that belong to the main group
+    ///
+    /// @param candidates fields a chip could be offered for
+    private Stream<Field> mainGroupChipFields(Collection<Field> candidates) {
+        return fieldsWithoutRow(candidates)
+                .filter(field -> FieldListSections.sectionOf(field) == FieldListSections.SectionType.MAIN);
+    }
+
+    /// Function to pick the candidates that have no row at the moment
+    ///
+    /// @param candidates fields a chip could be offered for
+    private Stream<Field> fieldsWithoutRow(Collection<Field> candidates) {
+        return candidates.stream().filter(field -> !editors.containsKey(field));
+    }
+
+    /// Function to create the button which adds one field
+    ///
+    /// @param field field the button adds
+    private Button createAddChip(Field field) {
+        Button chip = new Button(Localization.lang("+ %0", FieldsUtil.getDisplayName(field)));
+        chip.getStyleClass().addAll("all-fields-add-chip", "padding-4-12");
+        chip.setOnAction(_ -> showFieldEditor(field));
+        return chip;
+    }
+
+    /// Function to show the editor of a field the entry has no value for, and to focus it
+    ///
+    /// @param field field to show a row for
+    private void showFieldEditor(Field field) {
+        fieldsShownWithoutValue.add(field);
+        setupFieldArea();
+        // The outer runLater lets one pulse pass so the editors rebuilt become focusable
+        // before the inner runLater requests focus on them.
+        Platform.runLater(() -> Platform.runLater(() -> focusEditor(field)));
+    }
+
+    /// Function to move the keyboard focus into the editor of one field
+    ///
+    /// @param field field whose editor is focused
+    private void focusEditor(Field field) {
+        Optional.ofNullable(editors.get(field)).ifPresent(FieldEditorFX::focus);
+    }
+
+    /// Function to follow a change of the fields of the entry under review
+    ///
+    /// Looking up the bibliographic data of a DOI fills in fields that have no row yet, so the rows are
+    /// built again. Only a changed set of fields causes that, so typing in an editor neither rebuilds the
+    /// rows nor takes the focus away.
+    ///
+    /// @param event field change reported by the entry
+    @Subscribe
+    public void listen(FieldChangedEvent event) {
+        if (event.getBibEntry() != entry) {
+            return;
+        }
+        // A shown field whose value the user cleared keeps its row: otherwise deleting the last character
+        // would take the editor away from under the cursor.
+        if (editors.containsKey(event.getField()) && StringUtil.isBlank(event.getNewValue())) {
+            fieldsShownWithoutValue.add(event.getField());
+        }
+        // The change arrives while the editor is still handling it, so the rebuild waits for the next pulse
+        Platform.runLater(() -> {
+            if (!determineFieldsToShow().equals(editors.keySet())) {
+                setupFieldArea();
+            }
+        });
     }
 
     /// Function to give a field row a fixed height
@@ -229,16 +587,6 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         RowConstraints rowConstraints = new RowConstraints(height, height, height);
         rowConstraints.setValignment(VPos.TOP);
         return rowConstraints;
-    }
-
-    /// Function to collect the fetched fields the user may correct
-    ///
-    /// Internal bookkeeping fields are left out, because they are not part of the fetched metadata.
-    private List<Field> editableFields() {
-        return entry.getFields().stream()
-                    .filter(field -> !(field instanceof InternalField))
-                    .sorted(Comparator.comparing(FieldsUtil::getDisplayName))
-                    .toList();
     }
 
     /// The editors trigger undo on the keyboard shortcut. The regular action would undo the last change of the library,
