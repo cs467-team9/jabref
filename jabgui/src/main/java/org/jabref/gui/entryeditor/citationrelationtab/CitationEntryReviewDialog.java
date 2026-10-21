@@ -1,32 +1,39 @@
 package org.jabref.gui.entryeditor.citationrelationtab;
 
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.SequencedMap;
 
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
+import javafx.geometry.VPos;
 import javafx.scene.control.ButtonBar;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
-import javafx.scene.control.TextArea;
-import javafx.scene.control.TextField;
-import javafx.scene.control.TextInputControl;
 import javafx.scene.layout.ColumnConstraints;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.Priority;
+import javafx.scene.layout.RowConstraints;
 import javafx.scene.layout.VBox;
 
+import org.jabref.gui.DialogService;
+import org.jabref.gui.LibraryTab;
+import org.jabref.gui.StateManager;
+import org.jabref.gui.autocompleter.SuggestionProviders;
+import org.jabref.gui.fieldeditors.FieldEditorFX;
+import org.jabref.gui.fieldeditors.FieldEditors;
+import org.jabref.gui.fieldeditors.FieldNameLabel;
+import org.jabref.gui.preferences.GuiPreferences;
+import org.jabref.gui.undo.JabRefGuiUndoManager;
+import org.jabref.gui.undo.RedoAction;
+import org.jabref.gui.undo.UndoAction;
 import org.jabref.gui.util.BaseDialog;
 import org.jabref.gui.util.FieldsUtil;
 import org.jabref.gui.util.ViewModelListCellFactory;
+import org.jabref.logic.journals.JournalAbbreviationRepository;
 import org.jabref.logic.l10n.Localization;
-import org.jabref.logic.util.strings.StringUtil;
-import org.jabref.model.database.BibDatabaseMode;
+import org.jabref.model.database.BibDatabaseContext;
 import org.jabref.model.entry.BibEntry;
 import org.jabref.model.entry.BibEntryType;
 import org.jabref.model.entry.BibEntryTypesManager;
@@ -34,10 +41,15 @@ import org.jabref.model.entry.field.Field;
 import org.jabref.model.entry.field.InternalField;
 import org.jabref.model.entry.types.EntryType;
 
+import com.airhacks.afterburner.injection.Injector;
 import org.jspecify.annotations.NullMarked;
 
 /// Shows one entry with its type and fields editable, so that the
 /// metadata can be corrected before the entry becomes part of the library.
+///
+/// The fields use the same editors as the entry editor, so that, for example, the DOI editor offers
+/// to fetch the bibliographic data. The editors write to the entry directly; the caller hands in a copy
+/// so that [Decision#SKIP] and [Decision#STOP] leave the fetched entry as it was.
 @NullMarked
 public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDialog.Decision> {
 
@@ -53,24 +65,30 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
     private static final double LABEL_COLUMN_MIN_WIDTH = 110;
     private static final double EDITOR_COLUMN_MIN_WIDTH = 360;
-    private static final int MULTILINE_ROW_COUNT = 4;
+    private static final double ROW_HEIGHT = 32;
+    private static final double MULTILINE_ROW_HEIGHT = 96;
 
     private final BibEntry entry;
     private final ComboBox<EntryType> entryTypeCombo = new ComboBox<>();
-    private final SequencedMap<Field, TextInputControl> fieldEditors = new LinkedHashMap<>();
+
+    /// The entry is not part of the library yet, so its edits are kept out of the library's undo history.
+    private final JabRefGuiUndoManager reviewUndoManager = new JabRefGuiUndoManager();
 
     /// Function to build the review dialog for one fetched entry
     ///
-    /// @param entry             fetched entry to review, edited in place once it is added
+    /// @param entry             copy of the fetched entry, edited in place
     /// @param position          one-based number of this entry within the review
     /// @param total             number of entries to review
-    /// @param databaseMode      mode deciding which entry types are offered
+    /// @param databaseContext   library the entry is reviewed for
     /// @param entryTypesManager source of the selectable entry types
     public CitationEntryReviewDialog(BibEntry entry,
                                      int position,
                                      int total,
-                                     BibDatabaseMode databaseMode,
-                                     BibEntryTypesManager entryTypesManager) {
+                                     BibDatabaseContext databaseContext,
+                                     BibEntryTypesManager entryTypesManager,
+                                     GuiPreferences preferences,
+                                     StateManager stateManager,
+                                     DialogService dialogService) {
         this.entry = entry;
 
         setTitle(Localization.lang("Review entry %0 of %1", position, total));
@@ -80,12 +98,12 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         ButtonType stopButtonType = new ButtonType(Localization.lang("Stop review"), ButtonBar.ButtonData.CANCEL_CLOSE);
         getDialogPane().getButtonTypes().setAll(addButtonType, skipButtonType, stopButtonType);
 
-        setUpEntryTypeCombo(databaseMode, entryTypesManager);
-        getDialogPane().setContent(createContent());
+        setUpEntryTypeCombo(databaseContext, entryTypesManager);
+        getDialogPane().setContent(createContent(databaseContext, preferences, stateManager, dialogService));
 
         setResultConverter(buttonType -> {
             if (addButtonType.equals(buttonType)) {
-                applyEdits();
+                entry.setType(entryTypeCombo.getValue());
                 return Decision.ADD;
             }
             if (skipButtonType.equals(buttonType)) {
@@ -95,12 +113,12 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         });
     }
 
-    /// Function to fill the entry type combo box with the types of the current library mode
+    /// Function to fill the entry type combo box with the types of the library's mode
     ///
-    /// @param databaseMode      mode deciding which entry types are offered
+    /// @param databaseContext   library deciding which entry types are offered
     /// @param entryTypesManager source of the selectable entry types
-    private void setUpEntryTypeCombo(BibDatabaseMode databaseMode, BibEntryTypesManager entryTypesManager) {
-        entryTypeCombo.getItems().setAll(entryTypesManager.getAllTypes(databaseMode).stream()
+    private void setUpEntryTypeCombo(BibDatabaseContext databaseContext, BibEntryTypesManager entryTypesManager) {
+        entryTypeCombo.getItems().setAll(entryTypesManager.getAllTypes(databaseContext.getMode()).stream()
                                                           .map(BibEntryType::getType)
                                                           .sorted(Comparator.comparing(EntryType::getDisplayName))
                                                           .toList());
@@ -112,7 +130,10 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to build the dialog body: the entry summary above the editable type and field rows
-    private VBox createContent() {
+    private VBox createContent(BibDatabaseContext databaseContext,
+                               GuiPreferences preferences,
+                               StateManager stateManager,
+                               DialogService dialogService) {
         Label summary = new Label(entry.getAuthorTitleYear());
         summary.setWrapText(true);
 
@@ -130,14 +151,31 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
         fieldGrid.add(new Label(Localization.lang("Entry type")), 0, 0);
         fieldGrid.add(entryTypeCombo, 1, 0);
+        fieldGrid.getRowConstraints().add(new RowConstraints());
+
+        JournalAbbreviationRepository journalAbbreviationRepository = Injector.instantiateModelOrService(JournalAbbreviationRepository.class);
+        SuggestionProviders suggestionProviders = stateManager.activeTabProperty().get()
+                                                              .map(LibraryTab::getSuggestionProviders)
+                                                              .orElse(new SuggestionProviders());
+        UndoAction undoAction = createUndoAction(dialogService, stateManager);
+        RedoAction redoAction = createRedoAction(dialogService, stateManager);
 
         int row = 1;
-        for (Map.Entry<Field, String> fetchedField : editableFields()) {
-            Field field = fetchedField.getKey();
-            TextInputControl editor = createEditor(field, fetchedField.getValue());
-            fieldEditors.put(field, editor);
-            fieldGrid.add(new Label(FieldsUtil.getDisplayName(field)), 0, row);
-            fieldGrid.add(editor, 1, row);
+        for (Field field : editableFields()) {
+            FieldEditorFX fieldEditor = FieldEditors.getForField(
+                    field,
+                    journalAbbreviationRepository,
+                    preferences,
+                    databaseContext,
+                    entry.getType(),
+                    suggestionProviders,
+                    reviewUndoManager,
+                    undoAction,
+                    redoAction);
+            fieldEditor.bindToEntry(entry);
+            fieldGrid.add(new FieldNameLabel(field), 0, row);
+            fieldGrid.add(fieldEditor.getNode(), 1, row);
+            fieldGrid.getRowConstraints().add(createFieldRowConstraints(field, fieldEditor));
             row++;
         }
 
@@ -150,42 +188,49 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         return content;
     }
 
+    /// Function to give a field row a fixed height
+    ///
+    /// The field editors ask for unlimited height and rely on their container to limit it, as the entry editor does
+    /// with its row constraints. Rows sized to their content would grow without end, so each row gets its height here.
+    ///
+    /// @param field       field shown in the row
+    /// @param fieldEditor editor shown in the row, whose weight scales the height
+    private static RowConstraints createFieldRowConstraints(Field field, FieldEditorFX fieldEditor) {
+        double rowHeight = field.isMultiLineDefined() ? MULTILINE_ROW_HEIGHT : ROW_HEIGHT;
+        double height = rowHeight * fieldEditor.getWeight();
+        RowConstraints rowConstraints = new RowConstraints(height, height, height);
+        rowConstraints.setValignment(VPos.TOP);
+        return rowConstraints;
+    }
+
     /// Function to collect the fetched fields the user may correct
     ///
     /// Internal bookkeeping fields are left out, because they are not part of the fetched metadata.
-    private List<Map.Entry<Field, String>> editableFields() {
-        return entry.getFieldMap().entrySet().stream()
-                    .filter(fetchedField -> !(fetchedField.getKey() instanceof InternalField))
-                    .sorted(Comparator.comparing(fetchedField -> FieldsUtil.getDisplayName(fetchedField.getKey())))
+    private List<Field> editableFields() {
+        return entry.getFields().stream()
+                    .filter(field -> !(field instanceof InternalField))
+                    .sorted(Comparator.comparing(FieldsUtil::getDisplayName))
                     .toList();
     }
 
-    /// Function to create the editor of one field, a text area for the multiline fields
-    ///
-    /// @param field field the editor belongs to
-    /// @param value fetched value to show
-    private static TextInputControl createEditor(Field field, String value) {
-        if (field.isMultiLineDefined()) {
-            TextArea textArea = new TextArea(value);
-            textArea.setPrefRowCount(MULTILINE_ROW_COUNT);
-            textArea.setWrapText(true);
-            return textArea;
-        }
-        return new TextField(value);
+    /// The editors trigger undo on the keyboard shortcut. The regular action would undo the last change of the library,
+    /// so this one undoes the last change made in this dialog instead.
+    private UndoAction createUndoAction(DialogService dialogService, StateManager stateManager) {
+        return new UndoAction(dialogService, stateManager) {
+            @Override
+            public void execute() {
+                reviewUndoManager.undo();
+            }
+        };
     }
 
-    /// Function to write the edited entry type and field values back into the entry
-    ///
-    /// A field left blank is cleared, so that emptying an editor removes the field from the entry.
-    private void applyEdits() {
-        entry.setType(entryTypeCombo.getValue());
-        fieldEditors.forEach((field, editor) -> {
-            String value = editor.getText();
-            if (StringUtil.isBlank(value)) {
-                entry.clearField(field);
-            } else {
-                entry.setField(field, value.trim());
+    /// Counterpart of [#createUndoAction(DialogService, StateManager)] for redo.
+    private RedoAction createRedoAction(DialogService dialogService, StateManager stateManager) {
+        return new RedoAction(dialogService, stateManager) {
+            @Override
+            public void execute() {
+                reviewUndoManager.redo();
             }
-        });
+        };
     }
 }

@@ -1037,9 +1037,12 @@ public class CitationRelationsTab extends EntryEditorTab {
                                         BibEntry existingEntry) {
         // The check model hands out a live list, which the import below changes while the review runs.
         List<CitationRelationItem> itemsToReview = List.copyOf(entriesToReview);
-        BibDatabaseMode databaseMode = stateManager.getActiveDatabase()
-                                                   .map(BibDatabaseContext::getMode)
-                                                   .orElse(BibDatabaseMode.BIBLATEX);
+        Optional<BibDatabaseContext> activeDatabase = stateManager.getActiveDatabase();
+        if (activeDatabase.isEmpty()) {
+            dialogService.notify(Localization.lang("No library open"));
+            return;
+        }
+        BibDatabaseContext databaseContext = activeDatabase.get();
 
         List<CitationRelationItem> acceptedItems = new ArrayList<>();
         for (int position = 0; position < itemsToReview.size(); position++) {
@@ -1050,8 +1053,11 @@ public class CitationRelationsTab extends EntryEditorTab {
                     editedEntry,
                     position + 1,
                     itemsToReview.size(),
-                    databaseMode,
-                    entryTypesManager);
+                    databaseContext,
+                    entryTypesManager,
+                    preferences,
+                    stateManager,
+                    dialogService);
 
             // Closing the window without choosing a button means the user wants out of the review.
             CitationEntryReviewDialog.Decision decision = dialogService.showCustomDialogAndWait(reviewDialog)
