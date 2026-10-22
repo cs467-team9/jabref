@@ -71,12 +71,8 @@ import com.airhacks.afterburner.injection.Injector;
 import com.google.common.eventbus.Subscribe;
 import org.jspecify.annotations.NullMarked;
 
-/// Shows one entry with its type and fields editable, so that the
+/// GUI to shows one entry with its type and fields editable, so that the
 /// metadata can be corrected before the entry becomes part of the library.
-///
-/// The fields use the same editors as the entry editor, so that, for example, the DOI editor offers
-/// to fetch the bibliographic data. The editors write to the entry directly; the caller hands in a copy
-/// so that the fetched entry stays as it was, and hands in the same copy again when the user returns to it.
 @NullMarked
 public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDialog.Decision> {
 
@@ -103,8 +99,7 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     private static final double GRID_VGAP = 6;
     private static final double FIELD_AREA_SPACING = 8;
 
-    /// Chips offered besides the entry type's own optional fields. The abstract is no optional field of
-    /// any entry type, so it would otherwise have no chip at all.
+    /// List of fields that will be chips
     private static final List<Field> COMMON_CHIP_FIELDS = List.of(StandardField.ABSTRACT);
 
     /// Characters not allowed in the name of the user specific comment field.
@@ -124,38 +119,27 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     /// The entry is not part of the library yet, so its edits are kept out of the library's undo history.
     private final JabRefGuiUndoManager reviewUndoManager = new JabRefGuiUndoManager();
 
-    /// Editor of every shown field, in display order, as the entry editor's field tabs keep them. The
-    /// shown fields are its key set, so a later run of [#setupFieldArea] can tell whether the fields to
-    /// show changed at all.
+    /// Editor of every shown field, in display order
     private final Map<Field, FieldEditorFX> editors = new LinkedHashMap<>();
 
-    /// Holds the entry type row and one row per shown field. Kept across runs of [#setupFieldArea],
-    /// which replaces its contents.
     private final GridPane fieldGrid = new GridPane();
-
-    /// Holds the field rows and the chips below them. Kept across runs of [#setupFieldArea].
     private final VBox fieldArea = new VBox(FIELD_AREA_SPACING);
 
-    /// Fields without a value that are shown anyway: added with a chip, or cleared by the user while
-    /// being shown. Neither is part of [BibEntry#getFields()], so without this set the next run of
-    /// [#setupFieldArea] would drop their rows again.
+    /// Fields without a value that are shown anyway: added with a chip, or cleared by the user
     private final Set<Field> fieldsShownWithoutValue = new LinkedHashSet<>();
-
-    /// Whether the chips of the entry type's secondary optional fields are shown as well.
     private boolean showSecondaryOptionalChips;
 
     /// The current user's personal comment field, offered as a chip of the comments section.
     private final UserSpecificCommentField userSpecificCommentField;
 
     /// Expand state of each section, so that the rebuild after a chip click does not collapse a section
-    /// the user opened.
     private final Map<FieldListSections.SectionType, Boolean> sectionExpandOverrides =
             new EnumMap<>(FieldListSections.SectionType.class);
 
     /// Function to build the review dialog for one fetched entry
     ///
     /// @param entry             copy of the fetched entry, edited in place
-    /// @param position          one-based number of this entry within the review
+    /// @param position          number of this entry within the review
     /// @param total             number of entries to review
     /// @param databaseContext   library the entry is reviewed for
     /// @param entryTypesManager source of the selectable entry types
@@ -279,15 +263,6 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to build the rows of the fields to show, replacing the rows of the previous run
-    ///
-    /// Takes the three steps the entry editor's field tabs take: determine the fields, create a label and
-    /// an editor for each of them, then arrange those. Running it again is what lets the rows follow a
-    /// change of the entry type or of the fields the entry has.
-    ///
-    /// The arrangement follows the entry editor's "Main" tab: the fields of the main group as a grid on
-    /// top, then the chips of that group, then one collapsible section per further group, each holding
-    /// its own rows and chips. A section is present even without a single row, collapsed, so that its
-    /// chips stay reachable.
     private void setupFieldArea() {
         editors.clear();
         fieldGrid.getChildren().clear();
@@ -312,12 +287,6 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to determine the fields to show, and in which order, as the entry editor's "Main" tab does
-    ///
-    /// The entry type's required fields come first, the unset ones included, so that a value the fetcher
-    /// did not deliver shows as an empty editor instead of being missing from the dialog. The set
-    /// optional fields follow in the entry type's own order, then every remaining set field by name.
-    /// Internal bookkeeping fields are left out, among them the citation key, which is assigned when the
-    /// entry enters the library.
     private SequencedSet<Field> determineFieldsToShow() {
         Set<Field> setFields = entry.getFields();
         SequencedSet<Field> fields = new LinkedHashSet<>();
@@ -339,10 +308,6 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to create the label and the editor of one field, and to remember the editor
-    ///
-    /// The editor is the one the entry editor uses for the field, so that it offers the same actions —
-    /// looking up the bibliographic data of a DOI, for example.
-    ///
     /// @param field field the label and the editor belong to
     private FieldRow createFieldRow(Field field) {
         FieldEditorFX fieldEditor = FieldEditors.getForField(
@@ -373,8 +338,8 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
 
     /// Function to create the collapsible pane of one field group
     ///
-    /// Holds the rows of the group and, below them, the chips for its fields without a row, as the entry
-    /// editor's "Main" tab builds a section. Collapsed by default while the group has no row.
+    /// Holds the rows of the group and, below them, the chips for its fields without a row. 
+    /// Collapsed by default while the group has no row.
     ///
     /// @param type section the fields belong to
     /// @param rows rows of the section, in display order
@@ -400,9 +365,6 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to collect the fields a section offers chips for
-    ///
-    /// The comments section offers the general comment and, when the preferences ask for them, the
-    /// current user's personal comment field.
     ///
     /// @param type section to offer chips for
     private SequencedSet<Field> sectionMemberFields(FieldListSections.SectionType type) {
@@ -458,13 +420,7 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
         setupFieldArea();
     }
 
-    /// Function to create the buttons which add a field of the main group
-    ///
-    /// Offered are the entry type's optional fields of that group which have no row yet: the important
-    /// ones right away, the remaining ones behind "Show more", as the entry editor's "Main" tab offers
-    /// them. The fields of the other groups get their chips inside their own section. Without these
-    /// buttons a field the fetcher did not deliver could not be filled in at all, because a field
-    /// without a value has no row.
+    /// Function to create the buttons which add a field of the main group (chips)
     private Node createMainChipBar() {
         FlowPane chips = new FlowPane();
         chips.getStyleClass().add("gap-4");
@@ -532,6 +488,7 @@ public class CitationEntryReviewDialog extends BaseDialog<CitationEntryReviewDia
     }
 
     /// Function to show the editor of a field the entry has no value for, and to focus it
+    /// Used when a chip got clicked
     ///
     /// @param field field to show a row for
     private void showFieldEditor(Field field) {
