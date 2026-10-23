@@ -185,6 +185,18 @@ class CitationsRelationsTabViewModelTest {
     }
 
     @Test
+    void importEntriesForReviewReturnsImportedEntriesAndAddsToDatabase() {
+        List<CitationRelationItem> citationItems = List.of(
+                new CitationRelationItem(firstEntryToImport, false),
+                new CitationRelationItem(secondEntryToImport, false));
+
+        List<BibEntry> importedEntries = viewModel.importEntriesForReview(citationItems, CitationFetcher.SearchType.CITES, existingEntry);
+
+        assertEquals(List.of(firstEntryToImport, secondEntryToImport), importedEntries);
+        assertEquals(List.of(existingEntry, firstEntryToImport, secondEntryToImport), bibDatabaseContext.getEntries());
+    }
+
+    @Test
     void updateForEntryWithoutDoiSetsDoiMissingStatus() {
         BibEntry entryWithoutDoi = new BibEntry(StandardEntryType.Article);
         viewModel.updateForEntry(entryWithoutDoi);
